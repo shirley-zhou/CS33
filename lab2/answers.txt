@@ -1,0 +1,30 @@
+Questions:
+ 
+1.
+The problem comes from a line at the end of the function, where gdb prints out
+make_number (n=-5508385274225025937) at ../../emacs-24.5/src/lisp.h:700
+700     LISP_MACRO_DEFUN (make_number, Lisp_Object, (EMACS_INT n), (n))
+=> 0x00000000005436af <arith_driver+431>:       48 8d 04 ad 00 00 00 00 lea    0x0(,%rbp,4),%rax
+
+This corresponds to line 136 of the trace.tr file.
+At this point, n=-5508385274225025937 is actually the mathematically correct answer, which is stored in rbp. But the actual output that is printed at the end is incorrect. Looking at lisp.h:700, it seems that due to the way Elisp integers have tags attached, Elisp can really only handle 62 bit integers. The function at line 700 is make_number(EMACS_INT n), which takes the correct value n and shifts it left by INTTYPEBITS (equals 2), then shifts it right again by INTTYPEBITS. The effect is to turn the top 2 bits of the value to 1. Comparing rbp with the actual value outputted confirms this hypothesis, because the outputted number is -896699255797638033 (0xF38E48C71BD31C6F), while the correct value in rbp is -5508385274225025937 (0xB38E48C71BD31C6F). Shifting the top 4 bits left then right by 2 would have the effect of changing hex B to hex F.
+
+
+2.
+According to the documentation in data.c and the definition in lisp.h, most-positive-fixnum is the largest value that is representable in Lisp integer. The file lisp.h defines it as EMACS_INT_MAX >> INTTYPEBITS, where INTTYPEBITS is 2. In binary, this means that most-positive-fixnum looks like 000111....1. On a 64-bit system, this number is 2305843009213693951 (or 2^61 - 1), so printing most-positive-fixnum outputs that result.
+
+3.
+The product of most-positive-fixnum * most-positive-fixnum = 2305843009213693951 * 2305843009213693951 = 0xC000000000000001. Since the most positive integer representable in Elisp has only 61 bits, the top C in the hex representation is ignored, leaving the result as just 1.
+
+4.
+The flag -fsanitize=undefined checks for undefined behavior like signed overflow. This would not have caused problems with the trace because the program does not technically overflow in terms of normal 64-bit arithmetic. It would just be less efficient to compile with this flag, because there would be more error checking, just like in the testovf.s file that was compiled with the -fsanitize=undefined flag.
+
+5.
+The -fwrapv flag would not cause any difference, because the execution would just continue as usual, discarding top bits as necessary. In this case, there is no overflow over 64 bits anyway, so wrapv would not even take effect. In this case, the function would continue to produce the incorrect mathematical result due to Elisp's integer limitations, but it would not do the extra error checking that would happen with -fsanitize=undefined.
+
+6.
+If using -fwrapv, there is no need to do overflow checks for signed arithmetic, because the execution would just continue the same way under either signed or unsigned regardless of overflow. You could get rid of the checks that are present in the C code (specifically in arith_driver) to make the code more efficient and improve performance. The calculation would still return the same result.
+
+7.
+The efficiency differences could be somewhat significant. There would be fewer jump instructions needed to check for overflow cases. In particular, you could get rid of the checks in arith_driver.
+
